@@ -3,97 +3,99 @@ import threading
 import os
 import logging
 import time
+from concurrent.futures import ThreadPoolExecutor
+import sys
 
-BUFFER_SIZE = 8192
+# Check if sendfile is available (Linux only)
+if sys.platform in ("linux", "linux2"):
+    import sendfile
+
+# Configuration
+BUFFER_SIZE = 65536  # 64KB buffer for faster transfers
 CLIENT_PORT = 22223
-logging.basicConfig(filename='server.log', level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
+MAX_WORKERS = 20  # Maximum number of concurrent threads
 
-def init_logging():
-    logging.basicConfig(
-        filename='server.log',
-        level=logging.DEBUG,
-        format='%(asctime)s - %(levelname)s - %(message)s'
-    )
-    logging.info("Logging initialized")
-
+# Set up logging
+logging.basicConfig(
+    filename='server.log',
+    level=logging.INFO,  # Reduced from DEBUG to INFO
+    format='%(asctime)s - %(levelname)s - %(message)s'
+)
 
 def handle_client(client_socket, addr):
+    """Handle a single client connection."""
     try:
         logging.info(f"Connected to {addr}")
         print(f"[+] Connected to {addr}")
 
-        ''' #1. Receive file name and size from client '''
-        file_name = client_socket.recv(100).decode('utf-8')
-        file_size = int(client_socket.recv(100).decode('utf-8'))
-        send_count = 0
-        send_start = time.time()
-
+        # Receive file name and size from client
+        file_name = client_socket.recv(100).decode('utf-8').strip('\0')
+        file_size = int(client_socket.recv(100).decode('utf-8').strip('\0'))
+        
         logging.info(f"Sending file: {file_name} of size: {file_size} bytes")
-        print("[!] Sending file: {file_name} of size: {file_size} bytes")
+        print(f"[!] Sending file: {file_name} of size: {file_size} bytes")
 
-
-        ''' #2. Open and read as binary for parsing, then send to client '''
+        # Open the file and send it
         with open(file_name, "rb") as file:
-            while True:
-                data = file.read(BUFFER_SIZE)
-                if not data:
-                    logging.info("File transfer complete")
-                    print("File transfer complete")
-                    break
-                client_socket.sendall(data)
-                send_count += len(data)
-                logging.info(f"Sent {send_count} of {file_size} bytes")
-                print("[!] Sent {send_count} of {file_size} bytes")
+            send_start = time.time()
+            
+            if sys.platform in ("linux", "linux2") and 'sendfile' in globals():
+                # Use sendfile for zero-copy transfer on Linux
+                offset = 0
+                bytes_sent = 0
+                while bytes_sent < file_size:
+                    sent = sendfile.sendfile(client_socket.fileno(), file.fileno(), offset, BUFFER_SIZE)
+                    if sent == 0:
+                        break
+                    offset += sent
+                    bytes_sent += sent
+            else:
+                # Fallback to standard sendall for other platforms
+                bytes_sent = 0
+                while bytes_sent < file_size:
+                    data = file.read(BUFFER_SIZE)
+                    if not data:
+                        break
+                    client_socket.sendall(data)
+                    bytes_sent += len(data)
+            
+            send_end = time.time()
+            logging.info(f"Transfer complete in {send_end - send_start:.2f} seconds")
+            print(f"[+] Transfer complete in {send_end - send_start:.2f} seconds")
 
-        ''' #3. Close the file and socket '''
-        send_end = time.time()
-        logging.info(f"[+] Transfer complete in {send_end - send_start} seconds")
-        print("[+] Transfer complete in {send_end - send_start} seconds")
-
+    except FileNotFoundError:
+        logging.error(f"File {file_name} not found")
+        print(f"Error: File {file_name} not found")
     except Exception as e:
         logging.error(f"Error: {e}")
-        print("Error: ", e)
-
+        print(f"Error: {e}")
     finally:
         client_socket.close()
-        print("[-] Client socket closed")
-        logging.info("Client socket closed")
+        logging.info(f"Client socket closed for {addr}")
+        print(f"[-] Client socket closed for {addr}")
 
-
-'''The main function sets up the server socket, binds it to the hostname and port, and starts listening for incoming connections. When a client connects, a new thread is created to handle the client using the handle_client function. This allows the server to handle multiple clients concurrently.'''
 def main():
-    ''' #1. Create server socket and bind to host and port '''
+    """Set up and run the server."""
+    # Create and configure server socket
     server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     server_socket.bind((socket.gethostname(), CLIENT_PORT))
     server_socket.listen(5)
     logging.info(f"Server listening on port {CLIENT_PORT}")
-    print("[!] Server is running. Waiting for connections...")
-    init_logging()
-    print("[!]  Accept clients and start a new thread for each one, allowing multiple clients to connect simultaneously ")
-    time.sleep(1000)
-    
-    '''#2. Accept clients and start a new thread for each one, allowing multiple clients to connect simultaneously '''
-    
-    '''# The `start` method in the code is used to start the execution of a thread. In the context of the provided code snippet, when `client_handler.start()` is called, it initiates the execution of the thread represented by `client_handler`. This allows the server to handle multiple clients concurrently by creating a new thread for each incoming client connection.'''
-    counter = 0
-    while True:
-        client_socket, addr = server_socket.accept()
-        client_handler = threading.Thread(target=handle_client, args=(client_socket, addr))
-        
-        if client_handler.start():
-            logging.info(f"Server started New thread started for {addr}")
-            print(f"[+] Server started New thread started for {addr}")
-            client_handler.start()
-            
-        print("[-] Attempting to start new thread #", counter)
-        counter = counter + 1
-        client_handler.start()
+    print(f"[!] Server is running on port {CLIENT_PORT}. Waiting for connections...")
+
+    # Use ThreadPoolExecutor to manage client connections
+    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+        try:
+            while True:
+                client_socket, addr = server_socket.accept()
+                executor.submit(handle_client, client_socket, addr)
+        except KeyboardInterrupt:
+            logging.info("Server shutting down")
+            print("[!] Server shutting down")
+        finally:
+            server_socket.close()
 
 if __name__ == "__main__":
     logging.info("Starting server...")
-    print("[!] Update to use threading for multiple clients on server. The main function creates a server socket, binds to the host's name and CLIENT_PORT, listens for connections. Then in a loop, it accepts clients, starts a new thread for each, passing the client socket and address to handle_client")
-    print("\n\n[!] Server is running. Waiting for connections...")
+    print("[!] Starting server with threading and optimizations...")
     main()
-
-
-
