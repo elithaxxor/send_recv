@@ -3,10 +3,9 @@ import socket
 import time
 import sys
 from colorama import Fore, Style, init
+import struct
 
-
-## woks like a reverse payshell, the cient will connect directly to the server
-# Initialize colorama
+# Initialize colorama for colored output
 init(autoreset=True)
 
 class ClientConfig:
@@ -28,47 +27,61 @@ class ClientConfig:
 def main():
     config = ClientConfig()
 
-    try:
-        # Attempt to connect to the server
-        config.client_socket.connect((config.server_host, config.CPORT))
-        print(Fore.GREEN + f'[SYSTEM][CONNECTING..] {config.server_host} : {config.CPORT}')
-        print(Fore.GREEN + f'Hello {config.client_name}, you are connected on: {config.client_IP}')
+    # Retry connection in a loop until successful
+    while True:
+        try:
+            config.client_socket.connect((config.server_host, config.CPORT))
+            print(Fore.GREEN + f'[SYSTEM][CONNECTING..] {config.server_host} : {config.CPORT}')
+            print(Fore.GREEN + f'Hello {config.client_name}, you are connected on: {config.client_IP}')
+            break  # Exit loop on successful connection
+        except socket.timeout:
+            print(Fore.RED + f"[SYSTEM]*[ERROR] Connection timed out to {config.server_host}")
+            print("Retrying in 5 seconds...")
+            time.sleep(5)
+        except socket.error as e:
+            print(Fore.RED + f"[SYSTEM]*[ERROR] Unable to connect to {config.server_host} - {str(e)}")
+            print("Retrying in 5 seconds...")
+            time.sleep(5)
 
-        # Display server's local IP
-        server_IP = config.client_socket.getsockname()[0]
-        print(Fore.CYAN + f'[SYSTEM] Server Local IP: {server_IP}')
+    # Display server's local IP
+    server_IP = config.client_socket.getsockname()[0]
+    print(Fore.CYAN + f'[SYSTEM] Server Local IP: {server_IP}')
 
-    except Exception as e:
-        print(Fore.RED + f'[SYSTEM]*[ERROR] Unable to connect to: {config.server_host} - {str(e)}')
-        print("restasrting main function")  # Exit if unable to connect
-        main()
-
-    # Receive file parameters
+    # Receive file parameters from server
     file_name = config.client_socket.recv(100).decode('utf-8')
-    file_size = config.client_socket.recv(100).decode('utf-8') # Convert to int
-    print(Fore.GREEN + f'[SYSTEM]** {file_name} is : {file_size} bytes \n[SYSTEM].. Initiating File Transfer.')
+    file_size_bytes = config.client_socket.recv(8)
+    
+    try:
+        file_size_int = struct.unpack('!Q', file_size_bytes)[0]
+    except struct.error:
+        print(Fore.RED + "[SYSTEM]*[ERROR] Invalid file size received from server")
+        config.client_socket.close()
+        return
 
-    # Open and write the file into BINARY
+    print(Fore.GREEN + f'[SYSTEM]** {file_name} is : {file_size_int} bytes \n[SYSTEM].. Initiating File Transfer.')
+
+    # Receive and write the file in binary mode
     start_time = time.time()
-    file_size_int = int(file_size)
     with open(file_name, 'wb') as file:
         receive_count = 0
         while receive_count < file_size_int:
             data = config.client_socket.recv(8192)
             if not data:
+                print(Fore.RED + "[SYSTEM]*[ERROR] Connection closed by server before file transfer completed")
                 break
             file.write(data)
             receive_count += len(data)
 
-            # Display progress
-            progress = (receive_count / file_size) * 100
-            print(Fore.MAGENTA + f'\r[SYSTEM] Progress: {progress:.2f}% ({receive_count}/{file_size} bytes)', end='')
+            # Display transfer progress
+            progress = (receive_count / file_size_int) * 100
+            print(Fore.MAGENTA + f'\r[SYSTEM] Progress: {progress:.2f}% ({receive_count}/{file_size_int} bytes)', end='')
 
     end_time = time.time()
 
-    # Calculate time to complete
+    # Calculate and display transfer time
     time_to_complete = end_time - start_time
     print(Fore.GREEN + f'\n[SYSTEM] File Transfer Complete in {time_to_complete:.2f} seconds')
+    
     # Close the socket
     config.client_socket.close()
 
