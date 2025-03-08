@@ -1,4 +1,4 @@
-# Usage: Both clients (threaded and async) handle errors gracefully and provide feedback to the user, aligning with the functionality of their respective servers.
+#### Usage: Both clients (threaded and async) handle errors gracefully and provide feedback to the user, aligning with the functionality of their respective servers.
 
     Running the TCP Client:
         Ensure the TCP server is running (python tcp_server.py).
