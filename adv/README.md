@@ -1,5 +1,29 @@
 
+lanation of Changes
+1. Thread Pool with ThreadPoolExecutor
 
+    Why: Creating a new thread for each client can overwhelm the system under high load. A thread pool reuses a fixed number of threads (MAX_WORKERS = 10), improving resource management.
+    How: The ThreadPoolExecutor manages a pool of worker threads, and executor.submit assigns the handle_client function to an available thread.
+
+2. Increased Buffer Size
+
+    Why: A larger buffer size (64KB vs. 8KB) reduces the number of read and send operations, speeding up transfers.
+    How: Changed BUFFER_SIZE to 65536 bytes. This can be tuned further based on network conditions or file sizes.
+
+3. Zero-Copy Transfers with sendfile
+
+    Why: Copying data between kernel and user space adds overhead. sendfile offloads this to the OS, improving efficiency for large files.
+    How: On Linux, the server uses sendfile to transfer data directly from the file to the socket. A fallback to sendall is provided for other platforms.
+
+4. Optimized Logging
+
+    Why: Logging every chunk (as in the original code) slows down transfers due to frequent disk I/O.
+    How: Reduced logging level to INFO and removed per-chunk logs, keeping only essential messages (e.g., connection, transfer start/end).
+
+5. Robustness
+
+    Why: Proper error handling ensures the server remains stable under failure conditions.
+    How: Added specific handling for FileNotFoundError and ensured the client socket is always closed in the finally block.
 * Single-Threaded Approach
 * Multi-Threaded Approach
 * Simplicity:
