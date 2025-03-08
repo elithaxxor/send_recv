@@ -1,5 +1,7 @@
 #!/bin/bash
 
+
+## TODO: Get user input for server address and port
 # Default connection parameters
 SERVER_ADDRESS=${1:-192.168.1.112}
 PORT=${2:-12345}
