@@ -11,7 +11,7 @@ import sys
 # Configuration
 BUFFER_SIZE = 65536  # 64KB for faster transfers
 CLIENT_PORT = 22223
-MAX_WORKERS = 10  # Max concurrent threads
+MAX_WORKERS = 20  # Max concurrent threads
 TIMEOUT = 30
 
 # Logging setup
