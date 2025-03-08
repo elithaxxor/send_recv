@@ -1,179 +1,150 @@
-import json 
 import socket
 import threading
 import os
 import logging
 import time
+from concurrent.futures import ThreadPoolExecutor
 import struct
 import signal
+import sys
 
-BUFFER_SIZE = 16384
+# Configuration
+BUFFER_SIZE = 65536  # 64KB for faster transfers
 CLIENT_PORT = 22223
-MAX_CONNECTIONS = 50
+MAX_WORKERS = 10  # Max concurrent threads
 TIMEOUT = 30
 
-# Single logging configuration
+# Logging setup
 logging.basicConfig(
     filename='server.log',
-    level=logging.DEBUG,
+    level=logging.INFO,  # Reduced from DEBUG
     format='%(asctime)s - %(levelname)s - %(message)s',
     filemode='a'
 )
 
 # Connection limiter
-CONNECTION_POOL = threading.BoundedSemaphore(MAX_CONNECTIONS)
+CONNECTION_POOL = threading.BoundedSemaphore(MAX_WORKERS)
+
+# Check for sendfile (Linux only)
+if sys.platform in ("linux", "linux2"):
+    import sendfile
 
 def send_directory_listing(client_socket):
-    """Send list of available files to client"""
+    """Send list of available files to client."""
     try:
-        # Get list of files (excluding directories)
-        try:
-            files = [f for f in os.listdir('.') if os.path.isfile(f)]
-        except Exception as e:
-            print(f"Error listing files: {e}")
-            return
-        print("[+] Files available \n", files)
-        # Create formatted listing
-        listing = "\n".join([
-            f"{file} - {os.path.getsize(file)} bytes" 
-            for file in files
-        ]) or "No files available"
-        
-        print(f"[+] {client_socket} requested Listings available  \n", listing)
-        logging.info(f"[+] {client_socket} requested Listings available")
-
-        # Send listing with header
+        files = [f for f in os.listdir('.') if os.path.isfile(f)]
+        listing = "\n".join([f"{file} - {os.path.getsize(file)} bytes" for file in files]) or "No files available"
         header = struct.pack('Q', len(listing))
         client_socket.sendall(header)
         client_socket.sendall(listing.encode())
-        print("[+] Sent directory to client: ", client_socket)
         logging.info("Sent directory listing to client")
     except Exception as e:
-            logging.error(f"Directory listing error: {str(e)}")
-            print("[-] Directory listing error occurred, sending blank struct.. : error: \n", e)
-            client_socket.sendall(struct.pack('Q', 0))  # Send empty listing
-            
-            
-def handle_clients1(client_socket, addr):
+        logging.error(f"Directory listing error: {str(e)}")
+        client_socket.sendall(struct.pack('Q', 0))  # Empty listing
+
+def handle_client(client_socket, addr):
+    """Handle a single client connection."""
     try:
         client_socket.settimeout(TIMEOUT)
         logging.info(f"Connection from {addr}")
-        print(f"[+] Connected to {addr}")
-        
-        # 4BYTE Commands from client to server
-        command = client_socket.recv(4).decode() 
-        print(f"[!] Command {command} called by: {addr}")
-        logging.info(f"[!] Command {command} called by: {addr}")
-        
+
+        # Receive 4-byte command
+        command = client_socket.recv(4).decode("utf-8")
+        if len(command) != 4:
+            raise ValueError("Incomplete command received")
+        logging.info(f"Command {command} from {addr}")
+
         if command == "EXIT":
-            client_socket.close()
             return
 
-        if command == "LIST":
-            files = os.listdir(os.getcwd()) # UNSAFE AND SHOULD REMOVE
-            client_socket.sendall(str(files).encode()) # UNSAFE AND SHOULD REMOVE
-            send_directory_listing(client_socket) # SAFE AND SHOULD KEEP 
-            print(f"Files: {files}")
+        elif command == "LIST":
+            send_directory_listing(client_socket)
             return
-        
+
         elif command == "CHAT":
-            print("lets talk: ")
-            return 
-       
-            # This part of the code is handling the case when the client sends a command 'FILE' to the server. Here's a breakdown of what the code does:
-        elif command == 'FILE':
-            # Receive file name length first (fixed size header)
+            client_socket.sendall(b"Chat feature not implemented")
+            return
+
+        elif command == "FILE":
+            # Receive file name length (8 bytes)
             name_len_header = client_socket.recv(8)
+            if len(name_len_header) < 8:
+                raise ValueError("Incomplete file name length header")
             name_len = struct.unpack('Q', name_len_header)[0]
-            
-            # Now receive the filename
+
+            # Receive file name
             file_name_bytes = client_socket.recv(name_len)
+            if len(file_name_bytes) < name_len:
+                raise ValueError("Incomplete file name")
             file_name = file_name_bytes.decode('utf-8')
-            
-            # Receive file size
-            size_header = client_socket.recv(8)
-            file_size = struct.unpack('Q', size_header)[0]
-            
-            # Security: sanitize filename
+
+            # Sanitize file name
             safe_file_name = os.path.basename(file_name)
             safe_file_path = os.path.join(os.getcwd(), safe_file_name)
-            
-            print(f"[+] Safe File Name: {safe_file_name}")
-            print(f"[+] Safe file path: {safe_file_path}")
-            print(f"[!] File Name: {file_name} Size: {file_size}")
-            logging.info(f"[+] Safe File Name: {safe_file_name}, Size: {file_size} bytes")
-            
-            if not os.path.exists(file_name):
-                error_msg = f"File {file_name} not found"
-                logging.info(f"[-] {error_msg}")
-                raise FileNotFoundError(error_msg)
 
-            logging.info(f"Sending {file_name}, {file_size} bytes")
-            print(f"[*] Transferring {file_name}, {file_size} bytes")
-            
-            bytes_sent = 0
-            start_time = time.time()
+            if not os.path.exists(safe_file_path):
+                error_msg = f"File {safe_file_name} not found"
+                logging.info(error_msg)
+                client_socket.sendall(b"<ERROR>" + error_msg.encode())
+                return
 
-            with open(file_name, "rb") as f:
-                while True:
-                    data = f.read(BUFFER_SIZE)
-                    if not data:
-                        print(f"[+] Sent {bytes_sent}/{file_size} bytes")
-                        break
-                    client_socket.sendall(data)
-                    bytes_sent += len(data)
+            file_size = os.path.getsize(safe_file_path)
+            logging.info(f"Sending {safe_file_name}, {file_size} bytes")
 
-                    # Progress logging
-                    if bytes_sent % (BUFFER_SIZE * 10) == 0:  # Log every 10 buffers
-                        print(f"[!] Sent {bytes_sent}/{file_size} bytes")
+            # Send file size to client
+            client_socket.sendall(struct.pack('Q', file_size))
 
-            duration = time.time() - start_time
-            logging.info(f"[+] Transfer complete in {duration:.2f}s")
-            print(f"[+] Transfer completed in {duration:.2f} seconds")
-            
+            # Send file
+            with open(safe_file_path, "rb") as f:
+                if sys.platform in ("linux", "linux2") and 'sendfile' in globals():
+                    # Zero-copy transfer on Linux
+                    offset = 0
+                    bytes_sent = 0
+                    while bytes_sent < file_size:
+                        sent = sendfile.sendfile(client_socket.fileno(), f.fileno(), offset, BUFFER_SIZE)
+                        if sent == 0:
+                            break
+                        offset += sent
+                        bytes_sent += sent
+                else:
+                    # Fallback for other platforms
+                    bytes_sent = 0
+                    while bytes_sent < file_size:
+                        data = f.read(BUFFER_SIZE)
+                        if not data:
+                            break
+                        client_socket.sendall(data)
+                        bytes_sent += len(data)
+
+            logging.info("Transfer complete")
+            print(f"[+] Transfer completed for {safe_file_name}")
+
         else:
             logging.error(f"Invalid command: {command}")
-            print(f"[-] Invalid command: {command}... try again.")
-            try:
-                client_socket.send("<ERROR>Invalid command".encode())
-            except Exception as each_error:
-                print(f"[-] Error in sending error: {each_error}")  
-                logging.error(f"[-] Error in sending error: {each_error}")
-                
+            client_socket.sendall(b"<ERROR>Invalid command")
+
+    except (socket.timeout, ConnectionResetError, BrokenPipeError) as e:
+        logging.error(f"Connection error with {addr}: {str(e)}")
+    except ValueError as e:
+        logging.error(f"Protocol error with {addr}: {str(e)}")
+        client_socket.sendall(b"<ERROR>" + str(e).encode())
     except Exception as e:
         logging.error(f"Error with {addr}: {str(e)}")
-        print(f"[-] Error: {str(e)}")
-        try:
-            client_socket.send(f"<ERROR>{str(e)}".encode())
-        except Exception as e:
-            print(f"[-] Failed to send error to client: {e}")
-            
     finally:
         client_socket.close()
         CONNECTION_POOL.release()
-        logging.info(f"[+] Closed connection with {addr}")
-        print(f"[+] Closed {addr}")
+        logging.info(f"Closed connection with {addr}")
 
 def main():
-    """
-    Main function for the server.
-
-    Initializes a server socket, binds it to the hostname and port, and starts
-    listening for incoming connections. When a client connects, a new thread is
-    created to handle the client using the handle_client function. This allows the
-    server to handle multiple clients concurrently.
-
-    The server will shut down gracefully when either SIGINT (Ctrl+C) or SIGTERM
-    is received.
-    """
+    """Set up and run the server."""
     server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    server_socket.bind(('', CLIENT_PORT))  # Bind to all interfaces
-    server_socket.listen(MAX_CONNECTIONS)
+    server_socket.bind(('', CLIENT_PORT))
+    server_socket.listen(MAX_WORKERS)
 
-    # Graceful shutdown handling
+    # Graceful shutdown
     shutdown_flag = False
-    
+
     def signal_handler(sig, frame):
         nonlocal shutdown_flag
         shutdown_flag = True
@@ -181,29 +152,27 @@ def main():
         logging.info("Server shutting down")
         print("[!] Server shutting down...")
 
-    # Register signal handlers
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
 
-    # Start connection discovery, Display connection details
     print(f"[+] Server running on port {CLIENT_PORT}")
-    
-    while not shutdown_flag:
-        try:
-            client_socket, addr = server_socket.accept()
-            CONNECTION_POOL.acquire()
-            client_thread = threading.Thread(
-                target=handle_clients1,
-                args=(client_socket, addr),
-                daemon=True
-            )
-            client_thread.start()
-            print(f"[+] Active connections: {threading.active_count() - 1}")
-        except OSError:
-            if shutdown_flag:
-                break
-            else:
-                logging.error("Socket error occurred", exc_info=True)
-                
-if __name__ == "__main__": 
+
+    # Thread pool for concurrency
+    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+        while not shutdown_flag:
+            try:
+                client_socket, addr = server_socket.accept()
+                if not CONNECTION_POOL.acquire(blocking=False):
+                    logging.warning("Max connections reached, rejecting client")
+                    client_socket.close()
+                    continue
+                executor.submit(handle_client, client_socket, addr)
+                print(f"[+] Active connections: {threading.active_count() - 1}")
+            except OSError:
+                if shutdown_flag:
+                    break
+                else:
+                    logging.error("Socket error occurred", exc_info=True)
+
+if __name__ == "__main__":
     main()
