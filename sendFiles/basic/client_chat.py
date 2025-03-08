@@ -32,18 +32,34 @@ async def receive_messages(websocket):
     except websockets.ConnectionClosed:
         print("Connection closed.")
 
-async def main():
+async def main(uri):
     """Main function to connect to the server and run send/receive tasks."""
-    uri = "ws://localhost:3001"
     try:
         async with websockets.connect(uri) as websocket:
+            print(f"Connected to {uri}")
             # Run sending and receiving tasks concurrently
             await asyncio.gather(
                 send_messages(websocket),
                 receive_messages(websocket)
             )
     except Exception as e:
-        print(f"Failed to connect: {e}")
+        print(f"Failed to connect to {uri}: {e}")
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    # Ask user for server address and port with defaults
+    address = input("Enter the server's address (default: localhost): ") or "localhost"
+    port_input = input("Enter the server's port number (default: 3001): ")
+    
+    # Handle port input with validation
+    try:
+        port = int(port_input) if port_input else 3001
+    except ValueError:
+        print("Invalid port number. Using default port 3001.")
+        port = 3001
+    
+    # Form the WebSocket URI
+    uri = f"ws://{address}:{port}"
+    print(f"Connecting to {uri}...")
+    
+    # Start the client
+    asyncio.run(main(uri))
