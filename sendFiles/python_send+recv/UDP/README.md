@@ -1,3 +1,24 @@
+
+# How It Works
+## Server Behavior
+
+    Input Handling: The server prompts for a file or directory path.
+    Type Check: If the path is a directory, it sends a D indicator and calls send_directory to process the directory recursively. If it’s a file, it sends an F indicator and transfers the file as before.
+    Directory Traversal: The send_directory function uses os.walk to explore the directory tree, sending headers for each directory (D|<relative_path>) and file (F|<relative_path>|<size>), followed by file contents.
+
+## Client Behavior
+
+    Type Detection: The client reads the initial type indicator (D or F).
+    Directory Reception: For D, it enters a loop in receive_directory, parsing headers to create directories or receive files. For F, it handles a single file as in the original code.
+    Structure Recreation: Directories are created with os.makedirs, and files are written to their relative paths, preserving the original hierarchy.
+
+# Usage
+
+    Server: Run the server script, enter a directory path (e.g., my_folder) when prompted, and it will send the entire directory structure to the connected client.
+    Client: Run the client script, connect to the server, and it will recreate the directory structure locally in the current working directory.
+
+    
+## Updated Server Code
 ## Recent Fixes 
 Client: Now handles errors robustly, calculates progress accurately, retries connections safely, and validates file size data.
 Server: Ensures file existence, sends data reliably with fixed formats, handles client disconnections, and adapts to the local network dynamically.
