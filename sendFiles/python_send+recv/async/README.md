@@ -1,3 +1,15 @@
+Usage
+
+    Running the WebSocket Client:
+        Ensure the WebSocket server is running (python websocket_server.py).
+        Run the client: python websocket_client.py.
+        Follow the prompts to interact with the server.
+    Running the TCP Client:
+        Ensure the TCP server is running (python tcp_server.py).
+        Run the client: python tcp_client.py.
+        Follow the prompts to interact with the server.
+
+Both clients handle errors gracefully and provide feedback to the user, aligning with the functionality of their respective servers.
 
 TCP-based Server Fixes
 
