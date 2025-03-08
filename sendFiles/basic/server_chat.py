@@ -23,7 +23,7 @@ class WebSocketServer:
         try:
             hostname = socket.gethostname()
             local_ip = socket.gethostbyname(hostname)
-            print(f"Local ip: {local_ip")
+            print(f"Local ip: {local_ip}")
             print(f"hostname : {hostname}")
 
             logger.info(f"Local IP detected: {local_ip} Hostname: {hostname}")
