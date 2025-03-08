@@ -67,9 +67,11 @@ def main():
 
     # Receive type indicator
     type_indicator = config.client_socket.recv(1).decode()
+    
     if type_indicator == 'D':
         # Receive directory
         receive_directory(config.client_socket, '.')
+        
     elif type_indicator == 'F':
         # Receive single file
         file_name = config.client_socket.recv(100).decode('utf-8')
