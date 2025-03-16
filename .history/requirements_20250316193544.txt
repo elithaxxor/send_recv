@@ -1,0 +1,8 @@
+websockets>=10.0
+asyncio>=3.4.3
+typing-extensions>=4.0.0
+curses-windows>=2.2.0; platform_system=="Windows"  # Only needed for Windows systems
+pytest>=7.0.0  # For running tests
+flake8>=4.0.0  # For code quality checks
+black>=22.0.0  # For code formatting
+mypy>=0.950  # For type checking
