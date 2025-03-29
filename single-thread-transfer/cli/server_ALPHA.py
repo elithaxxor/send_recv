@@ -15,6 +15,7 @@ from numpy.lib.format import BUFFER_SIZE
 ## TODO: MAKE A CLASS FOR FILE TRANSFER
 ## TODO: ADD A CLASS FOR CHAT FUNCTIONALITY
 ## TODO: ADD A CLASS FOR FLASK API
+## TODO: Make seperate GUI App
 ###########################################
 
 ## server_ALPHA.py
