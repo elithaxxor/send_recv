@@ -7,32 +7,49 @@ from concurrent.futures import ThreadPoolExecutor
 import struct
 import signal
 import sys
+import re
+from utils import recv_exact, is_safe_filename, PROTOCOL_VERSION
 
-# Configuration
-BUFFER_SIZE = 65536  # 64KB for faster transfers
-CLIENT_PORT = 22223
+# --- Protocol Constants ---
+CMD_SIZE = 4
+SIZE_HEADER = 8
+BUFFER_SIZE = int(os.environ.get('FT_BUFFER', 65536))  # Configurable buffer size
+DEFAULT_PORT = 22223
 MAX_WORKERS = 20  # Max concurrent threads
 TIMEOUT = 30
+SAFE_COMMANDS = {"EXIT", "LIST", "CHAT", "FILE", "BATCH", "UPLOAD"}
+
+# --- Authentication ---
+AUTH_REQUIRED = True
+AUTH_USER = os.environ.get('FT_USER', "user")
+AUTH_PASS = os.environ.get('FT_PASS', "pass123")
 
 # Logging setup
 logging.basicConfig(
-    filename='server.log',
-    level=logging.INFO,  # Reduced from DEBUG
+    level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
-    filemode='a'
+    handlers=[
+        logging.FileHandler('server_threaded.log'),
+        logging.StreamHandler(sys.stdout)
+    ]
 )
 
-# Connection limiter
 CONNECTION_POOL = threading.BoundedSemaphore(MAX_WORKERS)
 
-# Check for sendfile (Linux only)
-if sys.platform in ("linux", "linux2"):
-    import sendfile
+# Try to import sendfile if available (Linux only)
+try:
+    if sys.platform in ("linux", "linux2"):
+        import sendfile
+        HAS_SENDFILE = True
+    else:
+        HAS_SENDFILE = False
+except ImportError:
+    HAS_SENDFILE = False
 
 def send_directory_listing(client_socket):
     """Send list of available files to client."""
     try:
-        files = [f for f in os.listdir('.') if os.path.isfile(f)]
+        files = [f for f in os.listdir('.') if os.path.isfile(f) and is_safe_filename(f)]
         listing = "\n".join([f"{file} - {os.path.getsize(file)} bytes" for file in files]) or "No files available"
         header = struct.pack('Q', len(listing))
         client_socket.sendall(header)
@@ -42,137 +59,183 @@ def send_directory_listing(client_socket):
         logging.error(f"Directory listing error: {str(e)}")
         client_socket.sendall(struct.pack('Q', 0))  # Empty listing
 
+def authenticate_client(client_socket):
+    """Authenticate client before proceeding."""
+    try:
+        user_len_bytes = recv_exact(client_socket, SIZE_HEADER)
+        user_len = struct.unpack('Q', user_len_bytes)[0]
+        username = recv_exact(client_socket, user_len).decode('utf-8')
+        pass_len_bytes = recv_exact(client_socket, SIZE_HEADER)
+        pass_len = struct.unpack('Q', pass_len_bytes)[0]
+        password = recv_exact(client_socket, pass_len).decode('utf-8')
+        if username == AUTH_USER and password == AUTH_PASS:
+            client_socket.sendall(b"AUTH_OK")
+            return True
+        else:
+            client_socket.sendall(b"AUTH_FAIL")
+            return False
+    except Exception as e:
+        logging.error(f"Authentication error: {str(e)}")
+        client_socket.sendall(b"AUTH_FAIL")
+        return False
+
+def send_file(client_socket, file_name):
+    """Send a file to the client with progress bar support."""
+    if not is_safe_filename(file_name) or not os.path.exists(file_name):
+        client_socket.sendall(struct.pack('Q', 0))
+        return
+    file_size = os.path.getsize(file_name)
+    client_socket.sendall(struct.pack('Q', file_size))
+    with open(file_name, "rb") as f:
+        try:
+            from tqdm import tqdm
+            use_tqdm = True
+        except ImportError:
+            use_tqdm = False
+        progress = tqdm(total=file_size, unit='B', unit_scale=True, desc=file_name) if use_tqdm else None
+        sent = 0
+        while sent < file_size:
+            data = f.read(BUFFER_SIZE)
+            if not data:
+                break
+            client_socket.sendall(data)
+            sent += len(data)
+            if use_tqdm:
+                progress.update(len(data))
+        if use_tqdm:
+            progress.close()
+    logging.info(f"Sent file {file_name} ({file_size} bytes)")
+
+def receive_file(client_socket, dest_file):
+    """Receive a file from the client and save it as dest_file."""
+    size_bytes = recv_exact(client_socket, SIZE_HEADER)
+    file_size = struct.unpack('Q', size_bytes)[0]
+    if file_size == 0:
+        return False
+    with open(dest_file, "wb") as f:
+        received = 0
+        try:
+            from tqdm import tqdm
+            use_tqdm = True
+        except ImportError:
+            use_tqdm = False
+        progress = tqdm(total=file_size, unit='B', unit_scale=True, desc=dest_file) if use_tqdm else None
+        while received < file_size:
+            chunk = client_socket.recv(min(BUFFER_SIZE, file_size - received))
+            if not chunk:
+                break
+            f.write(chunk)
+            received += len(chunk)
+            if use_tqdm:
+                progress.update(len(chunk))
+        if use_tqdm:
+            progress.close()
+    return received == file_size
+
 def handle_client(client_socket, addr):
-    """Handle a single client connection."""
     try:
         client_socket.settimeout(TIMEOUT)
         logging.info(f"Connection from {addr}")
-
-        # Receive 4-byte command
-        command = client_socket.recv(4).decode("utf-8")
-        if len(command) != 4:
-            raise ValueError("Incomplete command received")
-        logging.info(f"Command {command} from {addr}")
-
-        if command == "EXIT":
-            return
-
-        elif command == "LIST":
-            send_directory_listing(client_socket)
-            return
-
-        elif command == "CHAT":
-            client_socket.sendall(b"Chat feature not implemented")
-            return
-
-        elif command == "FILE":
-            # Receive file name length (8 bytes)
-            name_len_header = client_socket.recv(8)
-            if len(name_len_header) < 8:
-                raise ValueError("Incomplete file name length header")
-            name_len = struct.unpack('Q', name_len_header)[0]
-
-            # Receive file name
-            file_name_bytes = client_socket.recv(name_len)
-            if len(file_name_bytes) < name_len:
-                raise ValueError("Incomplete file name")
-            file_name = file_name_bytes.decode('utf-8')
-
-            # Sanitize file name
-            safe_file_name = os.path.basename(file_name)
-            safe_file_path = os.path.join(os.getcwd(), safe_file_name)
-
-            if not os.path.exists(safe_file_path):
-                error_msg = f"File {safe_file_name} not found"
-                logging.info(error_msg)
-                client_socket.sendall(b"<ERROR>" + error_msg.encode())
+        # Protocol version
+        client_socket.sendall(PROTOCOL_VERSION.encode('utf-8').ljust(16, b'\0'))
+        # Authenticate
+        if AUTH_REQUIRED:
+            if not authenticate_client(client_socket):
+                logging.info(f"Authentication failed for {addr}")
+                client_socket.close()
+                CONNECTION_POOL.release()
                 return
-
-            file_size = os.path.getsize(safe_file_path)
-            logging.info(f"Sending {safe_file_name}, {file_size} bytes")
-
-            # Send file size to client
-            client_socket.sendall(struct.pack('Q', file_size))
-
-            # Send file
-            with open(safe_file_path, "rb") as f:
-                if sys.platform in ("linux", "linux2") and 'sendfile' in globals():
-                    # Zero-copy transfer on Linux
-                    offset = 0
-                    bytes_sent = 0
-                    while bytes_sent < file_size:
-                        sent = sendfile.sendfile(client_socket.fileno(), f.fileno(), offset, BUFFER_SIZE)
-                        if sent == 0:
-                            break
-                        offset += sent
-                        bytes_sent += sent
-                else:
-                    # Fallback for other platforms
-                    bytes_sent = 0
-                    while bytes_sent < file_size:
-                        data = f.read(BUFFER_SIZE)
-                        if not data:
-                            break
-                        client_socket.sendall(data)
-                        bytes_sent += len(data)
-
-            logging.info("Transfer complete")
-            print(f"[+] Transfer completed for {safe_file_name}")
-
-        else:
-            logging.error(f"Invalid command: {command}")
-            client_socket.sendall(b"<ERROR>Invalid command")
-
-    except (socket.timeout, ConnectionResetError, BrokenPipeError) as e:
-        logging.error(f"Connection error with {addr}: {str(e)}")
-    except ValueError as e:
-        logging.error(f"Protocol error with {addr}: {str(e)}")
-        client_socket.sendall(b"<ERROR>" + str(e).encode())
+            logging.info(f"Authentication succeeded for {addr}")
+        while True:
+            # Receive 4-byte command
+            command_bytes = recv_exact(client_socket, CMD_SIZE)
+            command = command_bytes.decode("utf-8").strip().upper()
+            if len(command) == 0 or command not in SAFE_COMMANDS:
+                client_socket.sendall(b'ERRC')
+                continue
+            logging.info(f"Command {command} from {addr}")
+            if command == "EXIT":
+                break
+            elif command == "LIST":
+                send_directory_listing(client_socket)
+            elif command == "FILE":
+                # Receive file name
+                name_len_bytes = recv_exact(client_socket, SIZE_HEADER)
+                name_len = struct.unpack('Q', name_len_bytes)[0]
+                file_name = recv_exact(client_socket, name_len).decode('utf-8')
+                send_file(client_socket, file_name)
+            elif command == "BATCH":
+                # Receive number of files
+                count_bytes = recv_exact(client_socket, SIZE_HEADER)
+                count = struct.unpack('Q', count_bytes)[0]
+                for _ in range(count):
+                    name_len_bytes = recv_exact(client_socket, SIZE_HEADER)
+                    name_len = struct.unpack('Q', name_len_bytes)[0]
+                    file_name = recv_exact(client_socket, name_len).decode('utf-8')
+                    send_file(client_socket, file_name)
+            elif command == "UPLOAD":
+                # Receive file name
+                name_len_bytes = recv_exact(client_socket, SIZE_HEADER)
+                name_len = struct.unpack('Q', name_len_bytes)[0]
+                file_name = recv_exact(client_socket, name_len).decode('utf-8')
+                # Save as uploads/<filename>
+                os.makedirs('uploads', exist_ok=True)
+                dest_file = os.path.join('uploads', file_name)
+                receive_file(client_socket, dest_file)
+                logging.info(f"Received uploaded file: {file_name}")
+            elif command == "CHAT":
+                # Receive chat message
+                msg_len_bytes = recv_exact(client_socket, SIZE_HEADER)
+                msg_len = struct.unpack('Q', msg_len_bytes)[0]
+                msg = recv_exact(client_socket, msg_len).decode('utf-8')
+                logging.info(f"Chat from {addr}: {msg}")
+                # Echo back
+                client_socket.sendall(struct.pack('Q', len(msg)))
+                client_socket.sendall(msg.encode('utf-8'))
     except Exception as e:
-        logging.error(f"Error with {addr}: {str(e)}")
+        logging.error(f"Error handling client {addr}: {e}")
     finally:
         client_socket.close()
         CONNECTION_POOL.release()
-        logging.info(f"Closed connection with {addr}")
+        logging.info(f"Connection to {addr} closed")
 
 def main():
-    """Set up and run the server."""
+    import argparse
+    parser = argparse.ArgumentParser(description='Threaded File Transfer Server')
+    parser.add_argument('--port', type=int, default=int(os.environ.get('FT_PORT', DEFAULT_PORT)), help='Port to listen on')
+    args = parser.parse_args()
+    port = args.port
     server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    server_socket.bind(('', CLIENT_PORT))
-    server_socket.listen(MAX_WORKERS)
-
-    # Graceful shutdown
-    shutdown_flag = False
-
-    def signal_handler(sig, frame):
-        nonlocal shutdown_flag
-        shutdown_flag = True
+    try:
+        server_socket.bind(("0.0.0.0", port))
+    except OSError as e:
+        logging.error(f"Failed to bind to port {port}: {e}")
+        print(f"[ERROR] Failed to bind to port {port}: {e}")
+        sys.exit(1)
+    server_socket.listen(5)
+    logging.info(f"Server listening on port {port}")
+    print(f"[!] Server listening on port {port}")
+    def shutdown_handler(signum, frame):
+        logging.info("Shutting down server...")
+        print("[!] Shutting down server...")
         server_socket.close()
-        logging.info("Server shutting down")
-        print("[!] Server shutting down...")
-
-    signal.signal(signal.SIGINT, signal_handler)
-    signal.signal(signal.SIGTERM, signal_handler)
-
-    print(f"[+] Server running on port {CLIENT_PORT}")
-
-    # Thread pool for concurrency
+        sys.exit(0)
+    signal.signal(signal.SIGINT, shutdown_handler)
+    signal.signal(signal.SIGTERM, shutdown_handler)
     with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
-        while not shutdown_flag:
-            try:
-                client_socket, addr = server_socket.accept()
-                if not CONNECTION_POOL.acquire(blocking=False):
-                    logging.warning("Max connections reached, rejecting client")
-                    client_socket.close()
-                    continue
-                executor.submit(handle_client, client_socket, addr)
-                print(f"[+] Active connections: {threading.active_count() - 1}")
-            except OSError:
-                if shutdown_flag:
-                    break
-                else:
-                    logging.error("Socket error occurred", exc_info=True)
+        try:
+            while True:
+                CONNECTION_POOL.acquire()
+                client_sock, addr = server_socket.accept()
+                executor.submit(handle_client, client_sock, addr)
+        except Exception as e:
+            logging.error(f"Server error: {e}")
+            print(f"[ERROR] Server error: {e}")
+        finally:
+            server_socket.close()
 
 if __name__ == "__main__":
+    logging.info("Starting threaded server...")
+    print("[!] Starting threaded server...")
     main()

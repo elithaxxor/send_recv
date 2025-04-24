@@ -1,0 +1,9 @@
+2025-04-22 16:09:55,491 - INFO - Starting server...
+2025-04-22 16:09:55,498 - INFO - Server listening on port 22223
+2025-04-22 16:09:56,464 - INFO - Connected to ('127.0.0.1', 38650)
+2025-04-22 16:09:56,465 - ERROR - Error handling client ('127.0.0.1', 38650): name 'AUTH_REQUIRED' is not defined
+2025-04-22 16:09:56,465 - INFO - Connection to ('127.0.0.1', 38650) closed
+2025-04-22 16:09:56,487 - INFO - Connected to ('127.0.0.1', 38656)
+2025-04-22 16:09:56,487 - ERROR - Error handling client ('127.0.0.1', 38656): name 'AUTH_REQUIRED' is not defined
+2025-04-22 16:09:56,487 - INFO - Connection to ('127.0.0.1', 38656) closed
+2025-04-22 16:09:58,529 - INFO - Shutting down server...
