@@ -109,7 +109,9 @@ class Dashboard(ThemedTk if use_themed else tk.Tk):
         # Add Help button to header
         help_btn = ttk.Button(self, text="How to Use", style="Accent.TButton", command=self._show_help_popup)
         help_btn.place(x=820, y=18)
-
+        # Add Key Management button to header
+        key_btn = ttk.Button(self, text="Key Management", style="Accent.TButton", command=self._show_key_mgmt_popup)
+        key_btn.place(x=680, y=18)
         # --- Connection Frame ---
         conn_frame = ttk.LabelFrame(self, text="Connection", padding=10, style='TFrame')
         conn_frame.configure(borderwidth=2, relief='ridge')
@@ -326,6 +328,11 @@ class Dashboard(ThemedTk if use_themed else tk.Tk):
         popup.show()
         beep()
 
+    def _show_key_mgmt_popup(self):
+        popup = KeyMgmtPopup(self, self.client)
+        popup.show()
+        beep()
+
 class HackerPopup(tk.Toplevel):
     def __init__(self, parent, title="Popup", text="", accent="#39ff14"):
         super().__init__(parent)
@@ -352,6 +359,65 @@ class HackerPopup(tk.Toplevel):
         x = self.winfo_x() + event.x - self._drag_data["x"]
         y = self.winfo_y() + event.y - self._drag_data["y"]
         self.geometry(f"+{x}+{y}")
+
+class KeyMgmtPopup(tk.Toplevel):
+    def __init__(self, parent, client):
+        super().__init__(parent)
+        self.title("Key Management")
+        self.configure(bg=HACKER_BG)
+        self.geometry("520x420+340+220")
+        self.client = client
+        self.header = tk.Label(self, text="Key Management", bg=HACKER_BG, fg=HACKER_ACCENT, font=(HACKER_FONT, 14, "bold"))
+        self.header.pack(fill="x", pady=(10, 2))
+        # Public Key display
+        ttk.Label(self, text="Public Key (PEM, share with others):", style="Header.TLabel").pack(anchor="w", padx=18, pady=(10,2))
+        pub_pem = crypto_utils.serialize_public_key(client.public_key).decode()
+        self.pub_text = tk.Text(self, height=6, wrap="none", font=(HACKER_FONT, 9), bg=HACKER_PANEL, fg=HACKER_ACCENT2)
+        self.pub_text.insert("1.0", pub_pem)
+        self.pub_text.config(state="disabled")
+        self.pub_text.pack(fill="x", padx=18)
+        ttk.Button(self, text="Copy Public Key", style="Accent.TButton", command=lambda: self._copy_to_clipboard(pub_pem)).pack(anchor="w", padx=18, pady=2)
+        # Private Key export/import
+        ttk.Label(self, text="Private Key (keep secret):", style="Header.TLabel").pack(anchor="w", padx=18, pady=(10,2))
+        ttk.Button(self, text="Export Private Key", style="Accent.TButton", command=self._export_private_key).pack(anchor="w", padx=18, pady=2)
+        ttk.Button(self, text="Import Private Key", style="Accent.TButton", command=self._import_private_key).pack(anchor="w", padx=18, pady=2)
+        ttk.Button(self, text="Generate New Keypair", style="Danger.TButton", command=self._generate_new_keypair).pack(anchor="w", padx=18, pady=12)
+        self.close_btn = ttk.Button(self, text="Close", style="Accent.TButton", command=self.destroy)
+        self.close_btn.pack(pady=(10, 10))
+    def show(self):
+        self.grab_set()
+        self.deiconify()
+    def _copy_to_clipboard(self, text):
+        self.clipboard_clear()
+        self.clipboard_append(text)
+    def _export_private_key(self):
+        from tkinter import filedialog
+        path = filedialog.asksaveasfilename(defaultextension=".pem", filetypes=[("PEM files", "*.pem")])
+        if path:
+            pem = crypto_utils.serialize_private_key(self.client.private_key)
+            with open(path, 'wb') as f:
+                f.write(pem)
+    def _import_private_key(self):
+        from tkinter import filedialog, messagebox
+        path = filedialog.askopenfilename(filetypes=[("PEM files", "*.pem")])
+        if path:
+            with open(path, 'rb') as f:
+                pem = f.read()
+            try:
+                priv = crypto_utils.load_private_key(pem)
+                self.client.private_key = priv
+                self.client.public_key = priv.public_key()
+                messagebox.showinfo("Success", "Private key imported.")
+                self.destroy()
+            except Exception as e:
+                messagebox.showerror("Error", f"Failed to import private key: {e}")
+    def _generate_new_keypair(self):
+        from tkinter import messagebox
+        priv, pub = crypto_utils.generate_rsa_keypair()
+        self.client.private_key = priv
+        self.client.public_key = pub
+        messagebox.showinfo("Success", "New keypair generated.")
+        self.destroy()
 
 class ToolTip:
     def __init__(self, widget, text):
