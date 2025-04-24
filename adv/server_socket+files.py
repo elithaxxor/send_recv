@@ -114,6 +114,43 @@ class FileServer:
                                 break
                             client_socket.sendall(data)
                     self.log_event('download', user, file_name)
+                elif cmd == 'PUTF':  # Upload file (E2EE support)
+                    # Receive file name length and name
+                    name_len = struct.unpack('H', client_socket.recv(2))[0]
+                    file_name = client_socket.recv(name_len).decode('utf-8')
+                    abs_path = os.path.abspath(os.path.join(self.shared_dir, file_name))
+                    if not abs_path.startswith(self.shared_dir):
+                        client_socket.sendall(b'NO')
+                        continue
+                    # Receive file size
+                    file_size = struct.unpack('Q', client_socket.recv(8))[0]
+                    # Receive encrypted file data
+                    with open(abs_path, 'wb') as f:
+                        received = 0
+                        while received < file_size:
+                            chunk = client_socket.recv(min(BUFFER_SIZE, file_size - received))
+                            if not chunk:
+                                break
+                            f.write(chunk)
+                            received += len(chunk)
+                    # Check if an encrypted key is coming (for E2EE)
+                    key_flag = client_socket.recv(1)
+                    if key_flag == b'1':
+                        # Receive key filename length and name
+                        key_name_len = struct.unpack('H', client_socket.recv(2))[0]
+                        key_file_name = client_socket.recv(key_name_len).decode('utf-8')
+                        key_abs_path = os.path.abspath(os.path.join(self.shared_dir, key_file_name))
+                        key_size = struct.unpack('Q', client_socket.recv(8))[0]
+                        with open(key_abs_path, 'wb') as kf:
+                            received = 0
+                            while received < key_size:
+                                chunk = client_socket.recv(min(BUFFER_SIZE, key_size - received))
+                                if not chunk:
+                                    break
+                                kf.write(chunk)
+                                received += len(chunk)
+                    client_socket.sendall(b'OK')
+                    self.log_event('upload', user, file_name)
                 elif cmd == 'DEL ':  # Delete file
                     name_len = struct.unpack('H', client_socket.recv(2))[0]
                     file_name = client_socket.recv(name_len).decode('utf-8')
